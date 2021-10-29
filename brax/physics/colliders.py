@@ -399,6 +399,29 @@ def box_heightmap(box: BoxCorner, hm: HeightMap, qp_a: QP, qp_b: QP) -> Contact:
   penetration = jp.dot(height - pos, normal)
   return Contact(pos, vel, normal, penetration)
 
+def box_capsule(box: BoxCorner, capsule: Capsule, qp_a: QP, qp_b: QP) -> Contact:
+  """Returns contact between a box corner and a capsule."""
+  def endpoints(end, qp, offset):
+    pos = qp.pos + math.rotate(offset, qp.rot)
+    end = math.rotate(end, qp.rot)
+    return pos + end, pos - end
+
+  def closest_segment_point(a, b, pt):
+    ab = b - a
+    t = jp.dot(pt - a, ab) / (jp.dot(ab, ab) + 1e-10)
+    return a + jp.clip(t, 0., 1.) * ab
+  
+  box_corner_pos, box_corner_vel = qp_a.to_world(box.corner)
+  capsule_end0_pos, capsule_end1_pos = endpoints(capsule.end, qp_b, capsule.pos)
+  capsule_best_point = closest_segment_point(capsule_end0_pos, capsule_end1_pos, box_corner_pos)
+  penetration_vec = capsule_best_point - box_corner_pos
+  dist = jp.safe_norm(penetration_vec)
+  normal = penetration_vec / (1e-6 + dist)
+  penetration = capsule.radius - dist
+  pos = box_corner_pos
+  vel = qp_b.world_velocity(pos) - box_corner_vel
+
+  return Contact(pos, vel, normal, penetration)
 
 def capsule_plane(cap: CapsuleEnd, _: Plane, qp_a: QP, qp_b: QP) -> Contact:
   """Returns contact between a capsule and a plane."""
@@ -482,6 +505,7 @@ def get(config: config_pb2.Config, body: bodies.Body) -> List[Collider]:
   supported_types = {
       ('box', 'plane'): (BoxCorner, Plane, box_plane),
       ('box', 'heightMap'): (BoxCorner, HeightMap, box_heightmap),
+      ('box', 'capsule'): (BoxCorner, Capsule, box_capsule),
       ('capsule', 'plane'): (CapsuleEnd, Plane, capsule_plane),
       ('capsule', 'capsule'): (Capsule, Capsule, capsule_capsule),
   }
