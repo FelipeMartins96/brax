@@ -274,21 +274,20 @@ class TwoWayCollider(Collider):
 
 
 @pytree.register
-class Box(Collidable):
-  """A box."""
+class BoxFace(Collidable):
+  """A box Face."""
 
   def __init__(self, boxes: List[config_pb2.Body], body: bodies.Body):
-    super().__init__(boxes, body)
+    super().__init__([boxes[i] for i in range(len(boxes))], body)
+    coords = jp.array([[1,0,0]])#, [0,1,0], [0,0,1], [-1,0,0], [0,-1,0], [0,0,-1]])
+    normals = []
     halfsizes = []
-    rotations = []
     for b in boxes:
       col = b.colliders[0]
-      rot = math.euler_to_quat(vec_to_arr(col.rotation))
-      halfsize = vec_to_arr(col.box.halfsize)
-      halfsizes.append(halfsize)
-      rotations.append(rot)
+      normals.extend(coords)
+      halfsizes.extend([vec_to_arr(col.box.halfsize) for _ in range(6)])
     self.halfsize = jp.array(halfsizes)
-    self.rotation = jp.array(rotations)
+    self.normal = jp.array(normals)
 
 
 @pytree.register
@@ -418,7 +417,7 @@ def box_heightmap(box: BoxCorner, hm: HeightMap, qp_a: QP, qp_b: QP) -> Contact:
   return Contact(pos, vel, normal, penetration)
 
 
-def box_capsule(box: Box, cap: CapsuleEnd, qp_a: QP, qp_b: QP) -> Contact:
+def _box_capsule(box: BoxFace, cap: CapsuleEnd, qp_a: QP, qp_b: QP) -> Contact:
   """Returns contact between a box and a capsule end."""
   cap_end_world = qp_b.pos + math.rotate(cap.end, qp_b.rot)
   # transform capsule end (sphere) into local box space
@@ -478,6 +477,55 @@ def capsule_capsule(cap_a: Capsule, cap_b: Capsule, qp_a: QP,
   return Contact(pos, vel, normal, penetration)
 
 
+def box_capsule(box: BoxFace, cap: Capsule, qp_a: QP, qp_b: QP) -> Contact:
+  """Returns contact between a capsule and a box face."""
+  def endpoints(end, qp, offset):
+    pos = qp.pos + math.rotate(offset, qp.rot)
+    end = math.rotate(end, qp.rot)
+    return pos + end, pos - end
+  def closest_segment_point(a, b, pt):
+    ab = b - a
+    t = jp.dot(pt - a, ab) / (jp.dot(ab, ab) + 1e-10)
+    return a + jp.clip(t, 0., 1.) * ab
+
+  # TODO: corner case capsule is paralellel to box face
+  # TODO: box with rotations
+
+  # Get capsule positions relative to box face
+  cap_rel_pos = math.inv_rotate(qp_b.pos, qp_a.rot) - qp_a.pos
+  warnings.warn(f'qp_a pos: {qp_a.pos}')
+  warnings.warn(f'qp_b pos: {qp_b.pos}')
+  warnings.warn(f'cap rel pos: {cap_rel_pos}')
+
+  # Capsule endpoints
+  warnings.warn(f'cap.end: {cap.end}')
+  a0, a1 = endpoints(cap.end, qp_b, cap.pos)
+  warnings.warn(f'a0, a1: {a0}, {a1}')
+
+  cap_rel_normal = (a0 - a1) / jp.safe_norm(a0 - a1)
+
+  # Get box face normal
+  N = box.normal
+  p0 = jp.dot(N, box.halfsize)
+
+  # ray plane intersection
+  t = jp.dot(N, (-a1) / abs(jp.dot(N, cap_rel_normal)))
+  line_plane_intersection = a1 + cap_rel_normal * t
+  rel_boxface_closest_point = jp.clip(line_plane_intersection, -box.halfsize, box.halfsize)
+  rel_a_best = closest_segment_point(a0, a1, rel_boxface_closest_point)
+
+  boxface_closest_point = math.rotate(rel_boxface_closest_point, qp_a.rot) + qp_a.pos
+  a_best = math.rotate(rel_a_best, qp_a.rot) + qp_a.pos
+
+  dist = jp.safe_norm(a_best - boxface_closest_point)
+  normal = (a_best - a_best) / (1e-6 + dist)
+  pos = a_best - normal * cap.radius
+  vel = qp_a.world_velocity(pos) - qp_b.world_velocity(pos)
+  penetration = cap.radius - dist
+  
+  return Contact(pos, vel, normal, penetration)
+
+
 def get(config: config_pb2.Config, body: bodies.Body) -> List[Collider]:
   """Creates all colliders given a config."""
   def key_fn(x, y):
@@ -519,7 +567,7 @@ def get(config: config_pb2.Config, body: bodies.Body) -> List[Collider]:
   supported_types = {
       ('box', 'plane'): (BoxCorner, Plane, box_plane),
       ('box', 'heightMap'): (BoxCorner, HeightMap, box_heightmap),
-      ('box', 'capsule'): (Box, CapsuleEnd, box_capsule),
+      ('box', 'capsule'): (BoxFace, Capsule, box_capsule),
       ('capsule', 'plane'): (CapsuleEnd, Plane, capsule_plane),
       ('capsule', 'capsule'): (Capsule, Capsule, capsule_capsule),
   }
